@@ -1,5 +1,7 @@
 // ForwardIndex value structure with MetricMeta and AttributeBinding
 
+use crate::model::{Attribute, MetricType, SeriesSpec, Temporality};
+
 use super::*;
 use bytes::{Bytes, BytesMut};
 
@@ -44,25 +46,18 @@ impl Decode for MetricMeta {
     }
 }
 
-/// AttributeBinding: Attribute name and value pair
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AttributeBinding {
-    pub attr: String,
-    pub value: String,
-}
-
-impl Encode for AttributeBinding {
+impl Encode for Attribute {
     fn encode(&self, buf: &mut BytesMut) {
-        encode_utf8(&self.attr, buf);
+        encode_utf8(&self.key, buf);
         encode_utf8(&self.value, buf);
     }
 }
 
-impl Decode for AttributeBinding {
+impl Decode for Attribute {
     fn decode(buf: &mut &[u8]) -> Result<Self, EncodingError> {
         let attr = decode_utf8(buf)?;
         let value = decode_utf8(buf)?;
-        Ok(AttributeBinding { attr, value })
+        Ok(Attribute { key: attr, value })
     }
 }
 
@@ -72,7 +67,7 @@ pub struct ForwardIndexValue {
     pub metric_unit: Option<String>,
     pub metric_meta: MetricMeta,
     pub attr_count: u16,
-    pub attrs: Vec<AttributeBinding>,
+    pub attrs: Vec<Attribute>,
 }
 
 impl ForwardIndexValue {
@@ -98,7 +93,7 @@ impl ForwardIndexValue {
         let attr_count = u16::from_le_bytes([slice[0], slice[1]]);
         slice = &slice[2..];
 
-        let attrs = decode_array::<AttributeBinding>(&mut slice)?;
+        let attrs = decode_array::<Attribute>(&mut slice)?;
 
         if attrs.len() != attr_count as usize {
             return Err(EncodingError {
@@ -119,6 +114,35 @@ impl ForwardIndexValue {
     }
 }
 
+impl From<ForwardIndexValue> for SeriesSpec {
+    fn from(value: ForwardIndexValue) -> Self {
+        let temporality = match value.metric_meta.temporality() {
+            0 => Temporality::Unspecified,
+            1 => Temporality::Cumulative,
+            2 => Temporality::Delta,
+            _ => Temporality::Unspecified, // Default fallback
+        };
+
+        let metric_type = match value.metric_meta.metric_type {
+            1 => MetricType::Gauge,
+            2 => MetricType::Sum {
+                monotonic: value.metric_meta.monotonic(),
+                temporality,
+            },
+            3 => MetricType::Histogram { temporality },
+            4 => MetricType::ExponentialHistogram { temporality },
+            5 => MetricType::Summary,
+            _ => MetricType::Gauge, // Default fallback for unknown types
+        };
+
+        SeriesSpec {
+            metric_unit: value.metric_unit,
+            metric_type,
+            attributes: value.attrs,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -134,12 +158,12 @@ mod tests {
             },
             attr_count: 2,
             attrs: vec![
-                AttributeBinding {
-                    attr: "host".to_string(),
+                Attribute {
+                    key: "host".to_string(),
                     value: "server1".to_string(),
                 },
-                AttributeBinding {
-                    attr: "env".to_string(),
+                Attribute {
+                    key: "env".to_string(),
                     value: "prod".to_string(),
                 },
             ],
@@ -163,8 +187,8 @@ mod tests {
                 flags: 0x05,    // Cumulative (0x01) | Monotonic (0x04)
             },
             attr_count: 1,
-            attrs: vec![AttributeBinding {
-                attr: "service".to_string(),
+            attrs: vec![Attribute {
+                key: "service".to_string(),
                 value: "api".to_string(),
             }],
         };

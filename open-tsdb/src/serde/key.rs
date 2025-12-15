@@ -110,6 +110,19 @@ impl SeriesDictionaryKey {
     }
 }
 
+impl RecordKey for SeriesDictionaryKey {
+    const RECORD_TYPE: RecordType = RecordType::SeriesDictionary;
+}
+
+impl TimeBucketScoped for SeriesDictionaryKey {
+    fn bucket(&self) -> crate::model::TimeBucket {
+        crate::model::TimeBucket {
+            start: self.time_bucket,
+            size: self.bucket_size,
+        }
+    }
+}
+
 /// ForwardIndex key
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForwardIndexKey {
@@ -165,6 +178,19 @@ impl ForwardIndexKey {
             series_id,
             bucket_size,
         })
+    }
+}
+
+impl RecordKey for ForwardIndexKey {
+    const RECORD_TYPE: RecordType = RecordType::ForwardIndex;
+}
+
+impl TimeBucketScoped for ForwardIndexKey {
+    fn bucket(&self) -> crate::model::TimeBucket {
+        crate::model::TimeBucket {
+            start: self.time_bucket,
+            size: self.bucket_size,
+        }
     }
 }
 
@@ -233,6 +259,19 @@ impl InvertedIndexKey {
     }
 }
 
+impl RecordKey for InvertedIndexKey {
+    const RECORD_TYPE: RecordType = RecordType::InvertedIndex;
+}
+
+impl TimeBucketScoped for InvertedIndexKey {
+    fn bucket(&self) -> crate::model::TimeBucket {
+        crate::model::TimeBucket {
+            start: self.time_bucket,
+            size: self.bucket_size,
+        }
+    }
+}
+
 /// TimeSeries key
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TimeSeriesKey {
@@ -288,6 +327,19 @@ impl TimeSeriesKey {
             series_id,
             bucket_size,
         })
+    }
+}
+
+impl RecordKey for TimeSeriesKey {
+    const RECORD_TYPE: RecordType = RecordType::TimeSeries;
+}
+
+impl TimeBucketScoped for TimeSeriesKey {
+    fn bucket(&self) -> crate::model::TimeBucket {
+        crate::model::TimeBucket {
+            start: self.time_bucket,
+            size: self.bucket_size,
+        }
     }
 }
 

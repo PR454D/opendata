@@ -65,6 +65,25 @@ fn should_return_error_when_key_not_found() {
 - Use `BytesMut` for mutable byte buffers during encoding
 - The `bytes` crate is available as a workspace dependency
 
+### Imports
+
+- Place all `use` statements at the module level, not inside functions or methods
+- Group imports logically (standard library, external crates, local modules)
+
+```rust
+// Good
+use bytes::{BufMut, BytesMut};
+
+fn some_function() {
+    let mut buf = BytesMut::new();
+}
+
+// Bad
+fn some_function() {
+    use bytes::BufMut;  // Don't do this
+}
+```
+
 ### Dependencies
 
 - **slatedb**: The underlying storage engine for all database implementations

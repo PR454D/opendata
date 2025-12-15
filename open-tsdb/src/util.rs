@@ -86,8 +86,8 @@ impl Fingerprint for Vec<Attribute> {
     fn fingerprint(&self) -> u128 {
         let mut hasher = Hasher::new();
         for attribute in self {
-            hasher.update(attribute.0.as_bytes());
-            hasher.update(attribute.1.as_bytes());
+            hasher.update(attribute.key.as_bytes());
+            hasher.update(attribute.value.as_bytes());
         }
 
         let digest = hasher.finalize();

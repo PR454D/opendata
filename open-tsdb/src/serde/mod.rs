@@ -5,8 +5,9 @@ pub mod inverted_index;
 pub mod key;
 pub mod timeseries;
 
-use crate::model::RecordTag;
-use bytes::BytesMut;
+use crate::model::{RecordTag, TimeBucket};
+use bytes::{BufMut, BytesMut};
+use opendata_common::BytesRange;
 
 /// Key format version (currently 0x01)
 pub const KEY_VERSION: u8 = 0x01;
@@ -58,7 +59,10 @@ impl std::fmt::Display for EncodingError {
 
 impl RecordTag {
     /// Creates a new bucket-scoped record tag
-    pub fn new_bucket_scoped(record_type: RecordType, bucket_size: crate::model::BucketSize) -> Self {
+    pub fn new_bucket_scoped(
+        record_type: RecordType,
+        bucket_size: crate::model::BucketSize,
+    ) -> Self {
         let type_id = record_type.id();
         assert!(
             type_id <= 0x0F,
@@ -99,11 +103,7 @@ impl RecordTag {
     /// Returns None if the tag is global-scoped (low 4 bits are 0)
     pub fn bucket_size(&self) -> Option<crate::model::BucketSize> {
         let size_id = self.0 & 0x0F;
-        if size_id == 0 {
-            None
-        } else {
-            Some(size_id)
-        }
+        if size_id == 0 { None } else { Some(size_id) }
     }
 
     /// Returns the byte representation of this tag
@@ -135,11 +135,11 @@ pub trait RecordKey {
 /// Provides methods to create scan ranges and decode bucket prefixes.
 pub trait TimeBucketScoped: RecordKey {
     /// Returns the time bucket for this record
-    fn bucket(&self) -> &crate::model::TimeBucket;
+    fn bucket(&self) -> TimeBucket;
 
     /// Decodes and validates the bucket-scoped prefix of a key.
     /// Returns the TimeBucket if the record type matches the expected type.
-    fn decode_bucket_prefix(bytes: &[u8]) -> Result<crate::model::TimeBucket, EncodingError> {
+    fn decode_bucket_prefix(bytes: &[u8]) -> Result<TimeBucket, EncodingError> {
         if bytes.len() < 7 {
             return Err(EncodingError {
                 message: "Buffer too short for bucket prefix".to_string(),
@@ -174,7 +174,7 @@ pub trait TimeBucketScoped: RecordKey {
 
         let start_epoch_min = u32::from_be_bytes([bytes[2], bytes[3], bytes[4], bytes[5]]);
 
-        Ok(crate::model::TimeBucket {
+        Ok(TimeBucket {
             start: start_epoch_min,
             size: bucket_size,
         })
@@ -182,15 +182,10 @@ pub trait TimeBucketScoped: RecordKey {
 
     /// Create a BytesRange that covers all records of this type
     /// for the given time bucket.
-    fn bucket_range(bucket: &crate::model::TimeBucket) -> opendata_common::BytesRange {
-        use bytes::BufMut;
-        use opendata_common::BytesRange;
-
+    fn bucket_range(bucket: &TimeBucket) -> BytesRange {
         let mut buf = BytesMut::new();
         buf.put_u8(KEY_VERSION);
-        buf.put_u8(
-            RecordTag::new_bucket_scoped(Self::RECORD_TYPE, bucket.size).as_byte(),
-        );
+        buf.put_u8(RecordTag::new_bucket_scoped(Self::RECORD_TYPE, bucket.size).as_byte());
         buf.put_u32(bucket.start);
         BytesRange::prefix(buf.freeze())
     }
@@ -198,12 +193,10 @@ pub trait TimeBucketScoped: RecordKey {
 
 /// Helper function to write the bucket-scoped prefix to a buffer
 pub fn write_bucket_scoped_prefix<T: TimeBucketScoped>(buf: &mut BytesMut, record: &T) {
-    use bytes::BufMut;
+    let bucket = record.bucket();
     buf.put_u8(KEY_VERSION);
-    buf.put_u8(
-        RecordTag::new_bucket_scoped(T::RECORD_TYPE, record.bucket().size).as_byte(),
-    );
-    buf.put_u32(record.bucket().start);
+    buf.put_u8(RecordTag::new_bucket_scoped(T::RECORD_TYPE, bucket.size).as_byte());
+    buf.put_u32(bucket.start);
 }
 
 /// Encode a UTF-8 string
@@ -338,7 +331,7 @@ pub fn decode_fixed_element_array<T: Decode>(
     buf: &mut &[u8],
     element_size: usize,
 ) -> Result<Vec<T>, EncodingError> {
-    if buf.len() % element_size != 0 {
+    if !buf.len().is_multiple_of(element_size) {
         return Err(EncodingError {
             message: format!(
                 "Buffer length {} is not divisible by element size {}",

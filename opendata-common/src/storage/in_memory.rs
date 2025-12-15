@@ -3,7 +3,7 @@ use std::ops::RangeBounds;
 use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 
 use super::{MergeOperator, Storage, StorageSnapshot};
 use crate::{BytesRange, Record, StorageError, StorageIterator, StorageRead, StorageResult};
@@ -213,6 +213,7 @@ impl Storage for InMemoryStorage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::BytesMut;
     use std::ops::Bound;
 
     /// Test merge operator that appends new value to existing value with a separator.

@@ -4,17 +4,19 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-slatedb.workspace = true
-opendata-common.workspace = true
+async-trait.workspace = true
 bytes.workspace = true
+chrono.workspace = true
+dashmap.workspace = true
+opendata-common.workspace = true
+slatedb.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+blake3 = "1.8.2"
+promql-parser = "0.6"
 roaring = "0.7"
 tsz = "0.1"
-blake3 = "1.8.2"
-chrono.workspace = true
-promql-parser = "0.6"
-tokio.workspace = true
-async-trait.workspace = true
-tracing.workspace = true
 
 [dev-dependencies]
 rstest.workspace = true

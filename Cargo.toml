@@ -11,11 +11,12 @@ version = "0.1.0"
 edition = "2024"
 
 [workspace.dependencies]
-slatedb = "0.9.1"
-opendata-common = { path = "./opendata-common" }
-rstest = "0.19"
+async-trait = "0.1"
 bytes = "1.0"
 chrono = "0.4"
+dashmap = "6.1.0"
+opendata-common = { path = "./opendata-common" }
+rstest = "0.19"
+slatedb = "0.9.1"
 tokio = { version = "1.0", features = ["full"] }
-async-trait = "0.1"
 tracing = "0.1"

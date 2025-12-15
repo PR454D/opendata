@@ -158,13 +158,10 @@ execution to map series IDs back to their label sets when needed.
 - `time_bucket` (u32): The number of minutes since the UNIX epoch
 - `series_fingerprint` (u128): The fingerprint of the label set, computed as a hash of the labels
 
-The series fingerprint is computed using the labels of the series, which means
-there is a small chance that two series with different labels will have the same
-fingerprint. Prometheus makes the same trade-off and accepts the risk of
-collisions. The value contains the series ID(s) that correspond to this
-fingerprint, typically a single series ID. Note that these IDs are scoped to a
-single time bucket so the cardinality is measured in the number of series in the
-bucket, not globally.
+The series fingerprint is computed using the labels of the series. The value
+contains the series ID that corresponds to this fingerprint. Note that these IDs
+are scoped to a single time bucket so the cardinality is measured in the number
+of series in the bucket, not globally.
 
 **Value Schema:**
 
@@ -172,17 +169,15 @@ bucket, not globally.
 ┌──────────────────────────────────────────────────────────┐
 │                   SeriesDictionaryValue                  │
 ├──────────────────────────────────────────────────────────┤
-│  FixedElementArray<series_id: u32>                             │
+│  series_id: u32                                          │
 └──────────────────────────────────────────────────────────┘
 ```
 
 **Structure:**
 
-- The value is a `FixedElementArray<u32>` encoding the list of `series_id` values that
-  have the specified fingerprint. In the common case of no collisions, this array
-  contains a single `series_id`. When collisions occur, multiple series IDs are
-  stored, and the forward index must be consulted to disambiguate by comparing
-  the actual label sets.
+- The value is a single `series_id` (u32) that has the specified fingerprint.
+  Hash collisions are assumed not to occur (we should consider changing this
+  to a FixedElementArray<SeriesId> to allow for hash collisions).
 
 ### `ForwardIndex` (`RecordType::ForwardIndex` = `0x03`)
 

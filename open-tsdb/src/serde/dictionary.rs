@@ -4,26 +4,23 @@ use super::*;
 use crate::model::SeriesId;
 use bytes::{Bytes, BytesMut};
 
-/// SeriesDictionary value: FixedElementArray<series_id: u32>
+/// SeriesDictionary value: series_id: u32
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SeriesDictionaryValue {
-    pub series_ids: Vec<SeriesId>,
+    pub series_id: SeriesId,
 }
 
 impl SeriesDictionaryValue {
     pub fn encode(&self) -> Bytes {
         let mut buf = BytesMut::new();
-        encode_fixed_element_array(&self.series_ids, &mut buf);
+        self.series_id.encode(&mut buf);
         buf.freeze()
     }
 
     pub fn decode(buf: &[u8]) -> Result<Self, EncodingError> {
-        // Each SeriesId is 4 bytes (u32)
-        const SERIES_ID_SIZE: usize = 4;
-
         let mut slice = buf;
-        let series_ids = decode_fixed_element_array(&mut slice, SERIES_ID_SIZE)?;
-        Ok(SeriesDictionaryValue { series_ids })
+        let series_id = SeriesId::decode(&mut slice)?;
+        Ok(SeriesDictionaryValue { series_id })
     }
 }
 
@@ -53,9 +50,7 @@ mod tests {
     #[test]
     fn should_encode_and_decode_series_dictionary_value() {
         // given
-        let value = SeriesDictionaryValue {
-            series_ids: vec![1, 2, 3, 42, 99],
-        };
+        let value = SeriesDictionaryValue { series_id: 12345 };
 
         // when
         let encoded = value.encode();
@@ -66,9 +61,9 @@ mod tests {
     }
 
     #[test]
-    fn should_encode_and_decode_empty_series_dictionary_value() {
+    fn should_encode_and_decode_different_series_ids() {
         // given
-        let value = SeriesDictionaryValue { series_ids: vec![] };
+        let value = SeriesDictionaryValue { series_id: 42 };
 
         // when
         let encoded = value.encode();
@@ -76,20 +71,6 @@ mod tests {
 
         // then
         assert_eq!(decoded, value);
-    }
-
-    #[test]
-    fn should_encode_and_decode_single_series_id() {
-        // given
-        let value = SeriesDictionaryValue {
-            series_ids: vec![12345],
-        };
-
-        // when
-        let encoded = value.encode();
-        let decoded = SeriesDictionaryValue::decode(encoded.as_ref()).unwrap();
-
-        // then
-        assert_eq!(decoded, value);
+        assert_eq!(decoded.series_id, 42);
     }
 }

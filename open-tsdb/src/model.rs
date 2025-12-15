@@ -1,6 +1,5 @@
 use std::time::SystemTime;
 
-use crate::serde::RecordType;
 use crate::util::{Result, hour_bucket_in_epoch_minutes};
 
 /// Series ID (unique within a time bucket)
@@ -21,7 +20,11 @@ pub(crate) type BucketSize = u8;
 pub(crate) struct RecordTag(pub(crate) u8);
 
 /// Attribute key-value pair
-pub(crate) type Attribute = (String, String);
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct Attribute {
+    pub(crate) key: String,
+    pub(crate) value: String,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Temporality {

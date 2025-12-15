@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+mod index;
 mod model;
 mod serde;
 mod storage;
