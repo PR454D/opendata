@@ -1,10 +1,39 @@
-use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, any_value};
+use opentelemetry_proto::tonic::common::v1::{AnyValue, InstrumentationScope, KeyValue, any_value};
 use opentelemetry_proto::tonic::metrics::v1::{
     AggregationTemporality, HistogramDataPoint, Metric, metric, number_data_point,
 };
+use opentelemetry_proto::tonic::resource::v1::Resource;
 
 use crate::model::{Attribute, MetricType, Sample, Temporality};
 use crate::util::{OpenTsdbError, Result};
+
+/// Collect attributes from an OTLP Resource
+pub(crate) fn collect_resource_attributes(resource: Option<&Resource>) -> Vec<Attribute> {
+    match resource {
+        Some(resource) => key_values_to_attributes(&resource.attributes),
+        None => Vec::new(),
+    }
+}
+
+/// Collect attributes from an OTLP InstrumentationScope
+pub(crate) fn collect_scope_attributes(scope: Option<&InstrumentationScope>) -> Vec<Attribute> {
+    let mut attrs = Vec::new();
+    if let Some(scope) = scope {
+        if !scope.name.is_empty() {
+            attrs.push(Attribute {
+                key: "otel_scope_name".to_string(),
+                value: scope.name.clone(),
+            });
+        }
+        if !scope.version.is_empty() {
+            attrs.push(Attribute {
+                key: "otel_scope_version".to_string(),
+                value: scope.version.clone(),
+            });
+        }
+    }
+    attrs
+}
 
 /// A sample with all its attributes, including the metric name
 #[derive(Clone, Debug)]
@@ -17,12 +46,31 @@ pub(crate) struct SampleWithAttributes {
 pub(crate) struct OtelUtil;
 
 impl OtelUtil {
-    /// Returns all samples with attributes for a given metric
-    pub(crate) fn samples(metric: &Metric) -> Vec<SampleWithAttributes> {
-        match &metric.data {
+    /// Returns all samples with attributes for a given metric, merging in resource and scope attributes
+    pub(crate) fn samples(
+        metric: &Metric,
+        resource_attrs: &[Attribute],
+        scope_attrs: &[Attribute],
+    ) -> Vec<SampleWithAttributes> {
+        let mut samples = match &metric.data {
             Some(data) => data.to_samples(&metric.name),
             None => Vec::new(),
+        };
+
+        // Merge resource and scope attributes into each sample
+        for sample in &mut samples {
+            // Prepend resource attrs first, then scope attrs
+            // This ensures consistent ordering: resource -> scope -> metric/datapoint attrs
+            let mut merged_attrs = Vec::with_capacity(
+                resource_attrs.len() + scope_attrs.len() + sample.attributes.len(),
+            );
+            merged_attrs.extend_from_slice(resource_attrs);
+            merged_attrs.extend_from_slice(scope_attrs);
+            merged_attrs.append(&mut sample.attributes);
+            sample.attributes = merged_attrs;
         }
+
+        samples
     }
 }
 

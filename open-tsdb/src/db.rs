@@ -23,9 +23,10 @@ use std::sync::{Arc, atomic::AtomicU32};
 
 use dashmap::DashMap;
 use opendata_common::{Storage, storage::StorageSnapshot};
+use opentelemetry_proto::tonic::metrics::v1::MetricsData;
 use tokio::sync::{Mutex, RwLock};
 
-use crate::delta::TsdbDelta;
+use crate::delta::{TsdbDelta, TsdbDeltaBuilder};
 use crate::storage::OpenTsdbStorageReadExt;
 use crate::util::Result;
 use crate::{
@@ -76,12 +77,29 @@ impl Tsdb {
         })
     }
 
-    pub(crate) async fn ingest(&self, delta: TsdbDelta) -> Result<()> {
+    /// Ingest an OLTP payload (this is the main entry point for ingestion)
+    pub(crate) async fn ingest(&self, data: MetricsData) -> Result<()> {
+        let delta =
+            TsdbDeltaBuilder::new(self.bucket.clone(), &self.series_dict, &self.next_series_id)
+                .ingest_metrics_data(data)?
+                .build();
+
+        self.ingest_delta(&delta).await
+    }
+
+    /// Ingest a delta directly (this can be used when ingesting data as a
+    /// read-only replica to stay up to date with the main writer)
+    pub(crate) async fn ingest_delta(&self, delta: &TsdbDelta) -> Result<()> {
+        // TODO(agavra): log the delta to a WAL to avoid losing data
         let state = self.state.read().await;
         state.head.merge(&delta)?;
         Ok(())
     }
 
+    /// Flush the head to storage, making it durable. Eventually we will support
+    /// a native WAL so that we can get durability without waiting until a flush,
+    /// but for now the WAL is coupled with the storage layer so we accept the risk
+    /// of losing a small amount of data in the event of a crash.
     pub(crate) async fn flush(&self, storage: Arc<dyn Storage>) -> Result<()> {
         let _flush_guard = self.flush_mutex.lock().await;
 

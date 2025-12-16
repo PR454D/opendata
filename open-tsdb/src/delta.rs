@@ -1,12 +1,13 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use dashmap::DashMap;
-use opentelemetry_proto::tonic::metrics::v1::Metric;
+use opentelemetry_proto::tonic::metrics::v1::{Metric, MetricsData};
 
 use crate::{
     index::{ForwardIndex, InvertedIndex},
-    model::{MetricType, Sample, SeriesFingerprint, SeriesId, SeriesSpec, TimeBucket},
-    otel::OtelUtil,
+    model::{Attribute, MetricType, Sample, SeriesFingerprint, SeriesId, SeriesSpec, TimeBucket},
+    otel::{OtelUtil, collect_resource_attributes, collect_scope_attributes},
     util::{Fingerprint, Result, normalize_str},
 };
 
@@ -19,14 +20,14 @@ pub(crate) struct TsdbDeltaBuilder<'a> {
     pub(crate) series_dict: &'a DashMap<SeriesFingerprint, SeriesId>,
     pub(crate) series_dict_delta: HashMap<SeriesFingerprint, SeriesId>,
     pub(crate) samples: HashMap<SeriesId, Vec<Sample>>,
-    pub(crate) next_series_id: u32,
+    pub(crate) next_series_id: &'a AtomicU32,
 }
 
 impl<'a> TsdbDeltaBuilder<'a> {
     pub(crate) fn new(
         bucket: TimeBucket,
         series_dict: &'a DashMap<SeriesFingerprint, SeriesId>,
-        next_series_id: u32,
+        next_series_id: &'a AtomicU32,
     ) -> Self {
         Self {
             bucket,
@@ -39,10 +40,33 @@ impl<'a> TsdbDeltaBuilder<'a> {
         }
     }
 
-    pub(crate) fn ingest_metric(mut self, metric: &Metric) -> Result<()> {
+    /// Ingest a full MetricsData payload, processing all resource_metrics, scope_metrics, and metrics.
+    /// Resource and scope attributes are merged into each sample's attributes.
+    pub(crate) fn ingest_metrics_data(mut self, data: MetricsData) -> Result<Self> {
+        for resource_metrics in data.resource_metrics {
+            let resource_attrs = collect_resource_attributes(resource_metrics.resource.as_ref());
+
+            for scope_metrics in resource_metrics.scope_metrics {
+                let scope_attrs = collect_scope_attributes(scope_metrics.scope.as_ref());
+
+                for metric in scope_metrics.metrics {
+                    self.ingest_metric_internal(&metric, &resource_attrs, &scope_attrs)?;
+                }
+            }
+        }
+        Ok(self)
+    }
+
+    /// Internal method to ingest a single metric with pre-collected resource and scope attributes
+    fn ingest_metric_internal(
+        &mut self,
+        metric: &Metric,
+        resource_attrs: &[Attribute],
+        scope_attrs: &[Attribute],
+    ) -> Result<()> {
         let metric_unit = normalize_str(&metric.unit);
         let metric_type = MetricType::try_from(metric)?;
-        let samples_with_attrs = OtelUtil::samples(metric);
+        let samples_with_attrs = OtelUtil::samples(metric, resource_attrs, scope_attrs);
 
         for sample_with_attrs in samples_with_attrs {
             self.ingest_sample(
@@ -56,9 +80,9 @@ impl<'a> TsdbDeltaBuilder<'a> {
         Ok(())
     }
 
-    pub(crate) fn ingest_sample(
+    fn ingest_sample(
         &mut self,
-        mut attributes: Vec<crate::model::Attribute>,
+        mut attributes: Vec<Attribute>,
         metric_unit: Option<String>,
         metric_type: MetricType,
         sample: Sample,
@@ -78,8 +102,7 @@ impl<'a> TsdbDeltaBuilder<'a> {
             .map(|r| *r.value())
             .or_else(|| self.series_dict_delta.get(&fingerprint).copied())
             .unwrap_or_else(|| {
-                let series_id = self.next_series_id;
-                self.next_series_id = series_id + 1;
+                let series_id = self.next_series_id.fetch_add(1, Ordering::SeqCst);
 
                 self.series_dict_delta.insert(fingerprint, series_id);
 
@@ -131,6 +154,7 @@ mod tests {
     use super::*;
     use crate::model::{Attribute, MetricType, Temporality};
     use dashmap::DashMap;
+    use std::sync::atomic::AtomicU32;
 
     fn create_test_bucket() -> TimeBucket {
         TimeBucket::hour(1000)
@@ -161,7 +185,8 @@ mod tests {
         // given
         let bucket = create_test_bucket();
         let series_dict = DashMap::new();
-        let mut builder = TsdbDeltaBuilder::new(bucket, &series_dict, 0);
+        let next_series_id = AtomicU32::new(0);
+        let mut builder = TsdbDeltaBuilder::new(bucket, &series_dict, &next_series_id);
         let attributes = create_test_attributes();
         let sample = create_test_sample();
         let metric_unit = Some("bytes".to_string());
@@ -176,7 +201,7 @@ mod tests {
         );
 
         // then
-        assert_eq!(builder.next_series_id, 1);
+        assert_eq!(next_series_id.load(Ordering::SeqCst), 1);
         assert_eq!(builder.series_dict_delta.len(), 1);
         assert_eq!(builder.samples.len(), 1);
 
@@ -209,7 +234,8 @@ mod tests {
         // given
         let bucket = create_test_bucket();
         let series_dict = DashMap::new();
-        let mut builder = TsdbDeltaBuilder::new(bucket, &series_dict, 0);
+        let next_series_id = AtomicU32::new(0);
+        let mut builder = TsdbDeltaBuilder::new(bucket, &series_dict, &next_series_id);
         let attributes = create_test_attributes();
         let sample1 = Sample {
             timestamp: 1000,
@@ -236,7 +262,7 @@ mod tests {
         );
 
         // then
-        assert_eq!(builder.next_series_id, 1); // Only one series created
+        assert_eq!(next_series_id.load(Ordering::SeqCst), 1); // Only one series created
         assert_eq!(builder.series_dict_delta.len(), 1);
         assert_eq!(builder.samples.len(), 1);
 
@@ -252,7 +278,8 @@ mod tests {
         // given
         let bucket = create_test_bucket();
         let series_dict = DashMap::new();
-        let mut builder = TsdbDeltaBuilder::new(bucket, &series_dict, 0);
+        let next_series_id = AtomicU32::new(0);
+        let mut builder = TsdbDeltaBuilder::new(bucket, &series_dict, &next_series_id);
         let attributes1 = vec![Attribute {
             key: "service".to_string(),
             value: "api".to_string(),
@@ -278,7 +305,7 @@ mod tests {
         );
 
         // then
-        assert_eq!(builder.next_series_id, 2); // Two series created
+        assert_eq!(next_series_id.load(Ordering::SeqCst), 2); // Two series created
         assert_eq!(builder.series_dict_delta.len(), 2);
         assert_eq!(builder.samples.len(), 2);
         assert!(builder.samples.contains_key(&0));
@@ -295,7 +322,8 @@ mod tests {
         attributes.sort_by(|a, b| a.key.cmp(&b.key));
         let fingerprint = attributes.fingerprint();
         series_dict.insert(fingerprint, 42); // Existing series_id
-        let mut builder = TsdbDeltaBuilder::new(bucket, &series_dict, 0);
+        let next_series_id = AtomicU32::new(0);
+        let mut builder = TsdbDeltaBuilder::new(bucket, &series_dict, &next_series_id);
         let metric_type = MetricType::Gauge;
 
         // when
@@ -307,7 +335,7 @@ mod tests {
         );
 
         // then
-        assert_eq!(builder.next_series_id, 0); // No new series_id created
+        assert_eq!(next_series_id.load(Ordering::SeqCst), 0); // No new series_id created
         assert_eq!(builder.series_dict_delta.len(), 0); // Not added to delta
         assert_eq!(builder.samples.len(), 1);
         assert!(builder.samples.contains_key(&42)); // Uses existing series_id
@@ -318,7 +346,8 @@ mod tests {
         // given
         let bucket = create_test_bucket();
         let series_dict = DashMap::new();
-        let mut builder = TsdbDeltaBuilder::new(bucket, &series_dict, 0);
+        let next_series_id = AtomicU32::new(0);
+        let mut builder = TsdbDeltaBuilder::new(bucket, &series_dict, &next_series_id);
         let attributes = create_test_attributes();
         let metric_type = MetricType::Gauge;
 
@@ -337,7 +366,7 @@ mod tests {
         );
 
         // then
-        assert_eq!(builder.next_series_id, 1); // Only one series_id created
+        assert_eq!(next_series_id.load(Ordering::SeqCst), 1); // Only one series_id created
         assert_eq!(builder.series_dict_delta.len(), 1);
         assert_eq!(builder.samples.len(), 1);
         assert!(builder.samples.contains_key(&0)); // Reused series_id 0
@@ -349,7 +378,8 @@ mod tests {
         // given
         let bucket = create_test_bucket();
         let series_dict = DashMap::new();
-        let mut builder = TsdbDeltaBuilder::new(bucket, &series_dict, 0);
+        let next_series_id = AtomicU32::new(0);
+        let mut builder = TsdbDeltaBuilder::new(bucket, &series_dict, &next_series_id);
         let attributes1 = vec![
             Attribute {
                 key: "z_key".to_string(),
@@ -387,7 +417,7 @@ mod tests {
         );
 
         // then
-        assert_eq!(builder.next_series_id, 1); // Same series_id reused
+        assert_eq!(next_series_id.load(Ordering::SeqCst), 1); // Same series_id reused
         assert_eq!(builder.series_dict_delta.len(), 1);
         assert_eq!(builder.samples.len(), 1);
     }
@@ -397,7 +427,8 @@ mod tests {
         // given
         let bucket = create_test_bucket();
         let series_dict = DashMap::new();
-        let mut builder = TsdbDeltaBuilder::new(bucket, &series_dict, 0);
+        let next_series_id = AtomicU32::new(0);
+        let mut builder = TsdbDeltaBuilder::new(bucket, &series_dict, &next_series_id);
         let attributes = create_test_attributes();
         let metric_unit = Some("requests_per_second".to_string());
         let metric_type = MetricType::Sum {
@@ -433,7 +464,8 @@ mod tests {
         // given
         let bucket = create_test_bucket();
         let series_dict = DashMap::new();
-        let mut builder = TsdbDeltaBuilder::new(bucket, &series_dict, 0);
+        let next_series_id = AtomicU32::new(0);
+        let mut builder = TsdbDeltaBuilder::new(bucket, &series_dict, &next_series_id);
         let attributes = vec![
             Attribute {
                 key: "service".to_string(),
@@ -472,7 +504,8 @@ mod tests {
         // given
         let bucket = create_test_bucket();
         let series_dict = DashMap::new();
-        let mut builder = TsdbDeltaBuilder::new(bucket, &series_dict, 0);
+        let next_series_id = AtomicU32::new(0);
+        let mut builder = TsdbDeltaBuilder::new(bucket, &series_dict, &next_series_id);
         let attributes = Vec::<Attribute>::new();
         let metric_type = MetricType::Gauge;
 
@@ -485,7 +518,7 @@ mod tests {
         );
 
         // then
-        assert_eq!(builder.next_series_id, 1);
+        assert_eq!(next_series_id.load(Ordering::SeqCst), 1);
         assert_eq!(builder.series_dict_delta.len(), 1);
         assert_eq!(builder.samples.len(), 1);
         assert_eq!(builder.inverted_index.postings.len(), 0); // No attributes to index
@@ -498,7 +531,8 @@ mod tests {
         // given
         let bucket = create_test_bucket();
         let series_dict = DashMap::new();
-        let mut builder = TsdbDeltaBuilder::new(bucket, &series_dict, 0);
+        let next_series_id = AtomicU32::new(0);
+        let mut builder = TsdbDeltaBuilder::new(bucket, &series_dict, &next_series_id);
         let attributes = create_test_attributes();
         let metric_type = MetricType::Gauge;
 
