@@ -8,6 +8,9 @@ mod promql;
 mod query;
 mod serde;
 mod storage;
+#[cfg(test)]
+mod test_utils;
+mod tsdb;
 mod util;
 
 fn main() {

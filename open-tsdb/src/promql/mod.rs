@@ -1,4 +1,4 @@
-mod evaluator;
+pub(crate) mod evaluator;
 mod functions;
 mod parser;
 mod request;

@@ -9,7 +9,7 @@ use crate::{
         Attribute, MetricType, Sample, SampleWithAttributes, SeriesFingerprint, SeriesId,
         SeriesSpec, TimeBucket,
     },
-    util::Fingerprint,
+    util::{Fingerprint, OpenTsdbError, Result},
 };
 
 /// The delta chunk is the current in-memory segment of OpenTSDB representing
@@ -41,14 +41,15 @@ impl<'a> TsdbDeltaBuilder<'a> {
         }
     }
 
-    /// Ingest a sample with its attributes
-    pub(crate) fn ingest(&mut self, sample_with_attrs: SampleWithAttributes) {
+    /// Ingest a sample with its attributes.
+    /// Returns an error if the sample timestamp is outside the bucket's time range.
+    pub(crate) fn ingest(&mut self, sample_with_attrs: SampleWithAttributes) -> Result<()> {
         self.ingest_sample(
             sample_with_attrs.attributes,
             sample_with_attrs.metric_unit,
             sample_with_attrs.metric_type,
             sample_with_attrs.sample,
-        );
+        )
     }
 
     fn ingest_sample(
@@ -57,7 +58,18 @@ impl<'a> TsdbDeltaBuilder<'a> {
         metric_unit: Option<String>,
         metric_type: MetricType,
         sample: Sample,
-    ) {
+    ) -> Result<()> {
+        // Validate sample timestamp is within bucket range
+        let bucket_start_ms = self.bucket.start as u64 * 60 * 1000;
+        let bucket_end_ms =
+            (self.bucket.start as u64 + self.bucket.size_in_mins() as u64) * 60 * 1000;
+        if sample.timestamp < bucket_start_ms || sample.timestamp >= bucket_end_ms {
+            return Err(OpenTsdbError::InvalidInput(format!(
+                "Sample timestamp {} is outside bucket range [{}, {})",
+                sample.timestamp, bucket_start_ms, bucket_end_ms
+            )));
+        }
+
         // Sort attributes for consistent fingerprinting
         attributes.sort_by(|a, b| a.key.cmp(&b.key));
 
@@ -66,7 +78,7 @@ impl<'a> TsdbDeltaBuilder<'a> {
         // Fast path: check local delta first (for samples in the same batch)
         if let Some(&series_id) = self.series_dict_delta.get(&fingerprint) {
             self.samples.entry(series_id).or_default().push(sample);
-            return;
+            return Ok(());
         }
 
         // Atomic get-or-create in the shared dictionary. This ensures that
@@ -108,6 +120,7 @@ impl<'a> TsdbDeltaBuilder<'a> {
         }
 
         self.samples.entry(series_id).or_default().push(sample);
+        Ok(())
     }
 
     pub(crate) fn build(self) -> TsdbDelta {
@@ -191,8 +204,9 @@ mod tests {
     }
 
     fn create_test_sample() -> Sample {
+        // Timestamp must be within bucket range (1000 min = 60,000,000 ms to 1060 min = 63,600,000 ms)
         Sample {
-            timestamp: 1234567890,
+            timestamp: 60_000_001,
             value: 42.5,
         }
     }
@@ -210,12 +224,14 @@ mod tests {
         let metric_type = MetricType::Gauge;
 
         // when
-        builder.ingest_sample(
-            attributes.clone(),
-            metric_unit.clone(),
-            metric_type,
-            sample.clone(),
-        );
+        builder
+            .ingest_sample(
+                attributes.clone(),
+                metric_unit.clone(),
+                metric_type,
+                sample.clone(),
+            )
+            .unwrap();
 
         // then
         assert_eq!(next_series_id.load(Ordering::SeqCst), 1);
@@ -254,29 +270,34 @@ mod tests {
         let next_series_id = AtomicU32::new(0);
         let mut builder = TsdbDeltaBuilder::new(bucket, &series_dict, &next_series_id);
         let attributes = create_test_attributes();
+        // Timestamps must be within bucket range (60,000,000 to 63,600,000 ms)
         let sample1 = Sample {
-            timestamp: 1000,
+            timestamp: 60_000_001,
             value: 10.0,
         };
         let sample2 = Sample {
-            timestamp: 2000,
+            timestamp: 60_000_002,
             value: 20.0,
         };
         let metric_type = MetricType::Gauge;
 
         // when
-        builder.ingest_sample(
-            attributes.clone(),
-            Some("bytes".to_string()),
-            metric_type,
-            sample1.clone(),
-        );
-        builder.ingest_sample(
-            attributes.clone(),
-            Some("bytes".to_string()),
-            metric_type,
-            sample2.clone(),
-        );
+        builder
+            .ingest_sample(
+                attributes.clone(),
+                Some("bytes".to_string()),
+                metric_type,
+                sample1.clone(),
+            )
+            .unwrap();
+        builder
+            .ingest_sample(
+                attributes.clone(),
+                Some("bytes".to_string()),
+                metric_type,
+                sample2.clone(),
+            )
+            .unwrap();
 
         // then
         assert_eq!(next_series_id.load(Ordering::SeqCst), 1); // Only one series created
@@ -308,18 +329,22 @@ mod tests {
         let metric_type = MetricType::Gauge;
 
         // when
-        builder.ingest_sample(
-            attributes1,
-            Some("bytes".to_string()),
-            metric_type,
-            create_test_sample(),
-        );
-        builder.ingest_sample(
-            attributes2,
-            Some("bytes".to_string()),
-            metric_type,
-            create_test_sample(),
-        );
+        builder
+            .ingest_sample(
+                attributes1,
+                Some("bytes".to_string()),
+                metric_type,
+                create_test_sample(),
+            )
+            .unwrap();
+        builder
+            .ingest_sample(
+                attributes2,
+                Some("bytes".to_string()),
+                metric_type,
+                create_test_sample(),
+            )
+            .unwrap();
 
         // then
         assert_eq!(next_series_id.load(Ordering::SeqCst), 2); // Two series created
@@ -344,12 +369,14 @@ mod tests {
         let metric_type = MetricType::Gauge;
 
         // when
-        builder.ingest_sample(
-            create_test_attributes(), // Will be sorted by ingest_sample
-            Some("bytes".to_string()),
-            metric_type,
-            create_test_sample(),
-        );
+        builder
+            .ingest_sample(
+                create_test_attributes(), // Will be sorted by ingest_sample
+                Some("bytes".to_string()),
+                metric_type,
+                create_test_sample(),
+            )
+            .unwrap();
 
         // then
         assert_eq!(next_series_id.load(Ordering::SeqCst), 0); // No new series_id created
@@ -369,18 +396,22 @@ mod tests {
         let metric_type = MetricType::Gauge;
 
         // when
-        builder.ingest_sample(
-            attributes.clone(),
-            Some("bytes".to_string()),
-            metric_type,
-            create_test_sample(),
-        );
-        builder.ingest_sample(
-            attributes.clone(),
-            Some("bytes".to_string()),
-            metric_type,
-            create_test_sample(),
-        );
+        builder
+            .ingest_sample(
+                attributes.clone(),
+                Some("bytes".to_string()),
+                metric_type,
+                create_test_sample(),
+            )
+            .unwrap();
+        builder
+            .ingest_sample(
+                attributes.clone(),
+                Some("bytes".to_string()),
+                metric_type,
+                create_test_sample(),
+            )
+            .unwrap();
 
         // then
         assert_eq!(next_series_id.load(Ordering::SeqCst), 1); // Only one series_id created
@@ -420,18 +451,22 @@ mod tests {
         let metric_type = MetricType::Gauge;
 
         // when
-        builder.ingest_sample(
-            attributes1,
-            Some("bytes".to_string()),
-            metric_type,
-            create_test_sample(),
-        );
-        builder.ingest_sample(
-            attributes2,
-            Some("bytes".to_string()),
-            metric_type,
-            create_test_sample(),
-        );
+        builder
+            .ingest_sample(
+                attributes1,
+                Some("bytes".to_string()),
+                metric_type,
+                create_test_sample(),
+            )
+            .unwrap();
+        builder
+            .ingest_sample(
+                attributes2,
+                Some("bytes".to_string()),
+                metric_type,
+                create_test_sample(),
+            )
+            .unwrap();
 
         // then
         assert_eq!(next_series_id.load(Ordering::SeqCst), 1); // Same series_id reused
@@ -454,12 +489,14 @@ mod tests {
         };
 
         // when
-        builder.ingest_sample(
-            attributes.clone(),
-            metric_unit.clone(),
-            metric_type,
-            create_test_sample(),
-        );
+        builder
+            .ingest_sample(
+                attributes.clone(),
+                metric_unit.clone(),
+                metric_type,
+                create_test_sample(),
+            )
+            .unwrap();
 
         // then
         let series_spec = builder.forward_index.series.get(&0).unwrap();
@@ -500,12 +537,14 @@ mod tests {
         let metric_type = MetricType::Gauge;
 
         // when
-        builder.ingest_sample(
-            attributes.clone(),
-            Some("bytes".to_string()),
-            metric_type,
-            create_test_sample(),
-        );
+        builder
+            .ingest_sample(
+                attributes.clone(),
+                Some("bytes".to_string()),
+                metric_type,
+                create_test_sample(),
+            )
+            .unwrap();
 
         // then
         assert_eq!(builder.inverted_index.postings.len(), 3);
@@ -527,12 +566,14 @@ mod tests {
         let metric_type = MetricType::Gauge;
 
         // when
-        builder.ingest_sample(
-            attributes,
-            Some("bytes".to_string()),
-            metric_type,
-            create_test_sample(),
-        );
+        builder
+            .ingest_sample(
+                attributes,
+                Some("bytes".to_string()),
+                metric_type,
+                create_test_sample(),
+            )
+            .unwrap();
 
         // then
         assert_eq!(next_series_id.load(Ordering::SeqCst), 1);
@@ -554,7 +595,9 @@ mod tests {
         let metric_type = MetricType::Gauge;
 
         // when
-        builder.ingest_sample(attributes.clone(), None, metric_type, create_test_sample());
+        builder
+            .ingest_sample(attributes.clone(), None, metric_type, create_test_sample())
+            .unwrap();
 
         // then
         let series_spec = builder.forward_index.series.get(&0).unwrap();
@@ -593,15 +636,18 @@ mod tests {
 
         let handle_a = thread::spawn(move || {
             let mut builder = TsdbDeltaBuilder::new(bucket_a, &series_dict_a, &next_series_id_a);
-            builder.ingest_sample(
-                attributes_a,
-                Some("bytes".to_string()),
-                MetricType::Gauge,
-                Sample {
-                    timestamp: 1000,
-                    value: 42.0,
-                },
-            );
+            // Timestamp must be within bucket range (60,000,000 to 63,600,000 ms)
+            builder
+                .ingest_sample(
+                    attributes_a,
+                    Some("bytes".to_string()),
+                    MetricType::Gauge,
+                    Sample {
+                        timestamp: 60_000_001,
+                        value: 42.0,
+                    },
+                )
+                .unwrap();
             builder.build()
         });
 
@@ -612,15 +658,18 @@ mod tests {
 
         let handle_b = thread::spawn(move || {
             let mut builder = TsdbDeltaBuilder::new(bucket_b, &series_dict_b, &next_series_id_b);
-            builder.ingest_sample(
-                attributes_b,
-                Some("bytes".to_string()),
-                MetricType::Gauge,
-                Sample {
-                    timestamp: 2000,
-                    value: 43.0,
-                },
-            );
+            // Timestamp must be within bucket range (60,000,000 to 63,600,000 ms)
+            builder
+                .ingest_sample(
+                    attributes_b,
+                    Some("bytes".to_string()),
+                    MetricType::Gauge,
+                    Sample {
+                        timestamp: 60_000_002,
+                        value: 43.0,
+                    },
+                )
+                .unwrap();
             builder.build()
         });
 
@@ -669,5 +718,57 @@ mod tests {
             samples_b[0].value, 43.0,
             "delta_b should have sample with value 43.0"
         );
+    }
+
+    #[test]
+    fn should_reject_sample_before_bucket_start() {
+        // given
+        let bucket = create_test_bucket();
+        let series_dict = DashMap::new();
+        let next_series_id = AtomicU32::new(0);
+        let mut builder = TsdbDeltaBuilder::new(bucket, &series_dict, &next_series_id);
+        let attributes = create_test_attributes();
+        let metric_type = MetricType::Gauge;
+        // Timestamp before bucket start (60,000,000 ms)
+        let sample = Sample {
+            timestamp: 59_999_999,
+            value: 42.5,
+        };
+
+        // when
+        let result =
+            builder.ingest_sample(attributes, Some("bytes".to_string()), metric_type, sample);
+
+        // then
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, OpenTsdbError::InvalidInput(_)));
+        assert!(err.to_string().contains("outside bucket range"));
+    }
+
+    #[test]
+    fn should_reject_sample_at_or_after_bucket_end() {
+        // given
+        let bucket = create_test_bucket();
+        let series_dict = DashMap::new();
+        let next_series_id = AtomicU32::new(0);
+        let mut builder = TsdbDeltaBuilder::new(bucket, &series_dict, &next_series_id);
+        let attributes = create_test_attributes();
+        let metric_type = MetricType::Gauge;
+        // Timestamp at bucket end (63,600,000 ms) - should be rejected (exclusive end)
+        let sample = Sample {
+            timestamp: 63_600_000,
+            value: 42.5,
+        };
+
+        // when
+        let result =
+            builder.ingest_sample(attributes, Some("bytes".to_string()), metric_type, sample);
+
+        // then
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, OpenTsdbError::InvalidInput(_)));
+        assert!(err.to_string().contains("outside bucket range"));
     }
 }

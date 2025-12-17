@@ -556,20 +556,14 @@ mod tests {
     use super::*;
     use crate::model::{Attribute, MetricType, Sample, TimeBucket};
     use crate::query::test_utils::MockQueryReaderBuilder;
+    use crate::test_utils::assertions::approx_eq;
     use promql_parser::label::METRIC_NAME;
     use promql_parser::parser::EvalStmt;
     use rstest::rstest;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-    const EPSILON: f64 = 1e-10;
-
     /// Type alias for test data: (metric_name, labels, timestamp_offset_ms, value)
     type TestSampleData = Vec<(&'static str, Vec<(&'static str, &'static str)>, u64, f64)>;
-
-    /// Helper to check if two floats are approximately equal
-    fn approx_eq(a: f64, b: f64) -> bool {
-        (a - b).abs() < EPSILON || (a.is_nan() && b.is_nan())
-    }
 
     /// Helper to parse a PromQL query and evaluate it
     async fn parse_and_evaluate<R: QueryReader>(

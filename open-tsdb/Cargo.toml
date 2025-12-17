@@ -8,6 +8,7 @@ async-trait.workspace = true
 bytes.workspace = true
 chrono.workspace = true
 dashmap.workspace = true
+moka.workspace = true
 opendata-common.workspace = true
 slatedb.workspace = true
 tokio.workspace = true

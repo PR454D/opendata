@@ -23,10 +23,6 @@ pub(crate) struct MiniQueryReader<'a> {
 
 #[async_trait]
 impl<'a> QueryReader for MiniQueryReader<'a> {
-    fn bucket(&self) -> &TimeBucket {
-        self.bucket
-    }
-
     async fn forward_index(
         &self,
         series_ids: &[SeriesId],
@@ -136,12 +132,13 @@ impl MiniTsdb {
 
     /// Ingest samples with attributes.
     /// Note: Ingested data is batched and NOT visible to queries until flush().
+    /// Returns an error if any sample timestamp is outside the bucket's time range.
     pub(crate) async fn ingest(&self, samples: Vec<SampleWithAttributes>) -> Result<()> {
         let mut builder =
             TsdbDeltaBuilder::new(self.bucket.clone(), &self.series_dict, &self.next_series_id);
 
         for sample in samples {
-            builder.ingest(sample);
+            builder.ingest(sample)?;
         }
 
         let delta = builder.build();

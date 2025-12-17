@@ -1,16 +1,13 @@
 use async_trait::async_trait;
 
 use crate::index::{ForwardIndexLookup, InvertedIndexLookup};
-use crate::model::{Attribute, Sample, SeriesId, TimeBucket};
+use crate::model::{Attribute, Sample, SeriesId};
 use crate::util::Result;
 
 /// Trait for read-only queries across all data tiers.
 /// Implementations hide the details of how data is stored and retrieved.
 #[async_trait]
 pub(crate) trait QueryReader: Send + Sync {
-    /// Returns a reference to the time bucket
-    fn bucket(&self) -> &TimeBucket;
-
     /// Get a view into forward index data for the specified series IDs.
     /// This avoids cloning from head/frozen tiers - only storage data is loaded.
     async fn forward_index(
@@ -35,7 +32,7 @@ pub(crate) trait QueryReader: Send + Sync {
 pub(crate) mod test_utils {
     use super::*;
     use crate::index::{ForwardIndex, InvertedIndex};
-    use crate::model::{MetricType, SeriesSpec};
+    use crate::model::{MetricType, SeriesSpec, TimeBucket};
     use std::collections::HashMap;
 
     /// A mock QueryReader for testing that holds data in memory.
@@ -49,10 +46,6 @@ pub(crate) mod test_utils {
 
     #[async_trait]
     impl QueryReader for MockQueryReader {
-        fn bucket(&self) -> &TimeBucket {
-            &self.bucket
-        }
-
         async fn forward_index(
             &self,
             _series_ids: &[SeriesId],
