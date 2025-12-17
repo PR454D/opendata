@@ -129,6 +129,43 @@ pub(crate) struct TsdbDelta {
     pub(crate) samples: HashMap<SeriesId, Vec<Sample>>,
 }
 
+impl TsdbDelta {
+    /// Create an empty delta for a bucket
+    pub(crate) fn empty(bucket: TimeBucket) -> Self {
+        Self {
+            bucket,
+            forward_index: ForwardIndex::default(),
+            inverted_index: InvertedIndex::default(),
+            series_dict: HashMap::new(),
+            samples: HashMap::new(),
+        }
+    }
+
+    /// Check if delta has any data
+    pub(crate) fn is_empty(&self) -> bool {
+        self.samples.is_empty() && self.series_dict.is_empty()
+    }
+
+    /// Merge another delta into this one, accumulating all data
+    pub(crate) fn merge(&mut self, other: TsdbDelta) {
+        // Merge forward index
+        self.forward_index.merge(&other.forward_index);
+
+        // Merge inverted index
+        self.inverted_index.merge(other.inverted_index);
+
+        // Merge series dict
+        for (fingerprint, series_id) in other.series_dict {
+            self.series_dict.insert(fingerprint, series_id);
+        }
+
+        // Merge samples
+        for (series_id, samples) in other.samples {
+            self.samples.entry(series_id).or_default().extend(samples);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

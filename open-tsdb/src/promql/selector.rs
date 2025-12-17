@@ -20,7 +20,7 @@ pub(crate) async fn evaluate_selector_with_reader<R: QueryReader>(
     }
 
     // Find all series matching the equality terms from all tiers
-    let inverted_index_view = reader.inverted_index_view(&terms).await?;
+    let inverted_index_view = reader.inverted_index(&terms).await?;
     let candidates: HashSet<SeriesId> = inverted_index_view.intersect(terms).iter().collect();
 
     // If there are not-equal matchers, we need to filter using forward index
@@ -31,7 +31,7 @@ pub(crate) async fn evaluate_selector_with_reader<R: QueryReader>(
     // Get forward index view for candidates to apply not-equal filtering
     // This avoids cloning from head/frozen tiers upfront
     let candidates_vec: Vec<SeriesId> = candidates.into_iter().collect();
-    let forward_index_view = reader.forward_index_view(&candidates_vec).await?;
+    let forward_index_view = reader.forward_index(&candidates_vec).await?;
     let filtered = apply_not_equal_matchers(&forward_index_view, candidates_vec, selector);
 
     Ok(filtered.into_iter().collect())

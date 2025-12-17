@@ -163,7 +163,7 @@ impl<'a, R: QueryReader> Evaluator<'a, R> {
 
         // Batch load forward index for all candidates upfront
         let candidates_vec: Vec<_> = candidates.into_iter().collect();
-        let forward_index_view = self.reader.forward_index_view(&candidates_vec).await?;
+        let forward_index_view = self.reader.forward_index(&candidates_vec).await?;
 
         let mut series_with_results: HashSet<SeriesFingerprint> = HashSet::new();
         let mut samples = Vec::new();
@@ -186,7 +186,7 @@ impl<'a, R: QueryReader> Evaluator<'a, R> {
             }
 
             // Read and merge timeseries data from all layers
-            let sample_data = self.reader.get_samples(series_id, start_ms, end_ms).await?;
+            let sample_data = self.reader.samples(series_id, start_ms, end_ms).await?;
 
             // Find the best (latest) point in the time range
             if let Some(best_sample) = sample_data.last() {

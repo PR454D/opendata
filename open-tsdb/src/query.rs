@@ -13,26 +13,22 @@ pub(crate) trait QueryReader: Send + Sync {
 
     /// Get a view into forward index data for the specified series IDs.
     /// This avoids cloning from head/frozen tiers - only storage data is loaded.
-    async fn forward_index_view(
+    async fn forward_index(
         &self,
         series_ids: &[SeriesId],
     ) -> Result<Box<dyn ForwardIndexLookup + Send + Sync + '_>>;
 
     /// Get a view into inverted index data for the specified terms.
     /// This avoids cloning bitmaps upfront - only storage data is pre-loaded.
-    async fn inverted_index_view(
+    async fn inverted_index(
         &self,
         terms: &[Attribute],
     ) -> Result<Box<dyn InvertedIndexLookup + Send + Sync + '_>>;
 
     /// Get samples for a series within a time range, merging from all layers.
     /// Returns samples sorted by timestamp with duplicates removed (head takes priority).
-    async fn get_samples(
-        &self,
-        series_id: SeriesId,
-        start_ms: u64,
-        end_ms: u64,
-    ) -> Result<Vec<Sample>>;
+    async fn samples(&self, series_id: SeriesId, start_ms: u64, end_ms: u64)
+    -> Result<Vec<Sample>>;
 }
 
 #[cfg(test)]
@@ -57,21 +53,21 @@ pub(crate) mod test_utils {
             &self.bucket
         }
 
-        async fn forward_index_view(
+        async fn forward_index(
             &self,
             _series_ids: &[SeriesId],
         ) -> Result<Box<dyn ForwardIndexLookup + Send + Sync + '_>> {
             Ok(Box::new(self.forward_index.clone()))
         }
 
-        async fn inverted_index_view(
+        async fn inverted_index(
             &self,
             _terms: &[Attribute],
         ) -> Result<Box<dyn InvertedIndexLookup + Send + Sync + '_>> {
             Ok(Box::new(self.inverted_index.clone()))
         }
 
-        async fn get_samples(
+        async fn samples(
             &self,
             series_id: SeriesId,
             start_ms: u64,
