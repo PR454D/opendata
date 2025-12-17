@@ -5,3 +5,4 @@ mod request;
 mod response;
 mod router;
 pub(crate) mod selector;
+mod tsdb_router;

@@ -1,3 +1,5 @@
+use async_trait::async_trait;
+
 use super::request::{
     FederateRequest, LabelValuesRequest, LabelsRequest, MetadataRequest, QueryRangeRequest,
     QueryRequest, SeriesRequest,
@@ -8,6 +10,7 @@ use super::response::{
 };
 
 /// Trait for routing PromQL API requests to their corresponding handlers
+#[async_trait]
 pub trait PromqlRouter {
     /// Handle an instant query request (/api/v1/query)
     async fn query(&self, request: QueryRequest) -> QueryResponse;
