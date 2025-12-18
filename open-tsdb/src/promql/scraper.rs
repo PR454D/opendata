@@ -7,9 +7,9 @@ use std::time::Duration;
 use tokio::time::interval;
 
 use super::config::{PrometheusConfig, ScrapeConfig};
-use super::metrics::{Metrics, ScrapeLabels, TargetLabels};
+use super::metrics::{Metrics, ScrapeLabels};
 use super::openmetrics::parse_openmetrics;
-use crate::model::{Attribute, SampleWithAttributes, TimeBucket};
+use crate::model::{Attribute, MetricType, Sample, SampleWithAttributes, TimeBucket};
 use crate::tsdb::Tsdb;
 use crate::util::OpenTsdbError;
 use crate::util::Result;
@@ -97,17 +97,23 @@ impl Scraper {
             job: job_name.to_string(),
             instance: target.to_string(),
         };
-        let target_labels = TargetLabels {
-            job: job_name.to_string(),
-            instance: target.to_string(),
-        };
 
         let result = self.do_scrape_target(job_name, target, extra_labels).await;
 
+        // Create and ingest the `up` metric (1 = success, 0 = failure)
+        let up_value = if result.is_ok() { 1.0 } else { 0.0 };
+        let up_sample = self.create_up_sample(job_name, target, up_value);
+        if let Err(e) = self.ingest_samples(vec![up_sample]).await {
+            tracing::warn!(
+                "Failed to ingest up metric for {}/{}: {}",
+                job_name,
+                target,
+                e
+            );
+        }
+
         match &result {
             Ok(sample_count) => {
-                // Target is up
-                self.metrics.up.get_or_create(&target_labels).set(1);
                 // Record samples scraped
                 self.metrics
                     .scrape_samples_scraped
@@ -115,8 +121,6 @@ impl Scraper {
                     .inc_by(*sample_count as u64);
             }
             Err(_) => {
-                // Target is down
-                self.metrics.up.get_or_create(&target_labels).set(0);
                 // Record failed scrape
                 self.metrics
                     .scrape_samples_failed
@@ -126,6 +130,37 @@ impl Scraper {
         }
 
         result.map(|_| ())
+    }
+
+    /// Create an `up` sample for a target.
+    fn create_up_sample(&self, job_name: &str, target: &str, value: f64) -> SampleWithAttributes {
+        let timestamp_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        SampleWithAttributes {
+            attributes: vec![
+                Attribute {
+                    key: "__name__".to_string(),
+                    value: "up".to_string(),
+                },
+                Attribute {
+                    key: "job".to_string(),
+                    value: job_name.to_string(),
+                },
+                Attribute {
+                    key: "instance".to_string(),
+                    value: target.to_string(),
+                },
+            ],
+            metric_unit: None,
+            metric_type: MetricType::Gauge,
+            sample: Sample {
+                timestamp: timestamp_ms,
+                value,
+            },
+        }
     }
 
     /// Internal scrape implementation that returns sample count on success.

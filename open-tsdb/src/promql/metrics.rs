@@ -1,20 +1,10 @@
 //! Prometheus metrics for the open-tsdb server.
 
-use std::sync::atomic::AtomicI64;
-
 use axum::http::Method;
 use prometheus_client::encoding::{EncodeLabelSet, EncodeLabelValue};
 use prometheus_client::metrics::counter::Counter;
 use prometheus_client::metrics::family::Family;
-use prometheus_client::metrics::gauge::Gauge;
 use prometheus_client::registry::Registry;
-
-/// Labels for target health metrics (up gauge).
-#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
-pub struct TargetLabels {
-    pub job: String,
-    pub instance: String,
-}
 
 /// Labels for scrape metrics.
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
@@ -63,9 +53,6 @@ impl From<&Method> for HttpMethod {
 pub struct Metrics {
     registry: Registry,
 
-    /// Target health gauge (1 = up, 0 = down).
-    pub up: Family<TargetLabels, Gauge<i64, AtomicI64>>,
-
     /// Counter of samples successfully scraped.
     pub scrape_samples_scraped: Family<ScrapeLabels, Counter>,
 
@@ -86,10 +73,6 @@ impl Metrics {
     /// Create a new metrics registry with all metrics registered.
     pub fn new() -> Self {
         let mut registry = Registry::default();
-
-        // Target health gauge
-        let up = Family::<TargetLabels, Gauge<i64, AtomicI64>>::default();
-        registry.register("up", "Whether the target is up (1) or down (0)", up.clone());
 
         // Scrape samples scraped counter
         let scrape_samples_scraped = Family::<ScrapeLabels, Counter>::default();
@@ -117,7 +100,6 @@ impl Metrics {
 
         Self {
             registry,
-            up,
             scrape_samples_scraped,
             scrape_samples_failed,
             http_requests_total,
@@ -144,26 +126,8 @@ mod tests {
 
         // then
         let encoded = metrics.encode();
-        assert!(encoded.contains("# HELP up"));
         assert!(encoded.contains("# HELP scrape_samples_scraped"));
         assert!(encoded.contains("# HELP http_requests_total"));
-    }
-
-    #[test]
-    fn should_record_up_gauge() {
-        // given
-        let metrics = Metrics::new();
-        let labels = TargetLabels {
-            job: "test_job".to_string(),
-            instance: "localhost:9090".to_string(),
-        };
-
-        // when
-        metrics.up.get_or_create(&labels).set(1);
-
-        // then
-        let encoded = metrics.encode();
-        assert!(encoded.contains("up{job=\"test_job\",instance=\"localhost:9090\"} 1"));
     }
 
     #[test]
