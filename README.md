@@ -2,13 +2,13 @@
 
 OpenData is a collection of open source databases designed from ground up for object storage. We aim to deliver highly focused, objectstore-native versions of online databases that can power your application stack. As of today, we have a competitive timeseries database and a data streaming backend. We plan to ship vector search, text search, and other database types over time. Contributions are welcome!
 
-Building performant, cost-effective, and correct online systems on object storage takes special care. Successful designs all have to solve the problem of write batching, multiple levels of caching, and snapshot isolation for correctness. OpenData systems build on a common foundation to solve these problems. This common foundation gives OpenData systems a common set of operational tools, configuration systems, etc., that make our systems easier to operate in aggregate. 
+Building performant, cost-effective, and correct online database on object storage takes special care. Successful designs all have to solve the problem of write batching, multiple levels of caching, and snapshot isolation for correctness. OpenData databases build on a common foundation to solve these problems. This common foundation gives our databases a common set of operational tools, configuration systems, etc., that make our databases easier to operate in aggregate. 
 
 # Architecture
 
 ## 10,000ft view
 
-The OpenData ecosystem builds databases for object storage on a common core. At a high level, the ingestion, storage, and query layers are logically separated from each other. The ingestion layer implements write APIs, the storage layer takes writes and indexes them into read optimized data structures, and the query layer implements query APIs that consume read optimized versions of the written data. Each layer leverages a common set of components across the products, which is a key part of what makes the experience to develop and operate OpenData systems efficient.
+The OpenData ecosystem builds databases for object storage on a common core. At a high level, the ingestion, storage, and query layers are logically separated from each other. The ingestion layer implements write APIs, the storage layer takes writes and indexes them into read optimized data structures, and the query layer implements query APIs that consume read optimized versions of the written data. Each layer leverages a common set of components, which is a key part of what makes the experience to develop and operate OpenData databases efficient.
 
 ```
   ┌───────┐        ┌───────┐        ┌───────┐
@@ -114,8 +114,8 @@ The flip side of this decoupled architecture is that you have higher end-to-end 
 
 OpenData ships two databases today:
 
-* TSDB: An objectstore native timeseries database that can serve as a backend for Prometheus. Its a great option for a low cost, easy to operate, grafana backend. Learn more about it here : <link to RFC>
-* Log: Think of it as Kafka 2.0. An objecstore native event streaming backend that supports millions of logs, so you can finally get a replayable log per key. Learn more about it here: <link to rfc>
+* TSDB: An objectstore native timeseries database that can serve as a backend for Prometheus. Its a great option for a low cost, easy to operate, grafana backend. Learn more about it [here](open-tsdb/README.md).
+* Log: Think of it as Kafka 2.0. An objecstore native event streaming backend that supports millions of logs, so you can finally get a replayable log per key. Learn more about it [here](open-log/rfcs/0001-storage.md).
 
 # Quick Start
 
@@ -125,6 +125,6 @@ TODO.
 # Why OpenData?
 
 1. We believe that object storage is a fundamentally new ingredient in data systems: it provides highly durable, highly available, infinite storage with unique performance and cost structures. It solves one of the hardest problems in distributed data systems: consistent replication. At the same time, tremendous care must be taken to make object storage work correctly, performantly, and cost-effectively. When done right, systems built natively on object storage are far simpler and cheaper to operate in modern clouds than the alternatives. We want to bring the benefits of object storage to every database.
-2. Inspired by the UNIX philosophy, we believe single purpose systems that compose well are superior to systems that try to solve many problems under one umbrella, which is what has tended to happen with existing open surce projects since each is developed in a silo. Buy building multiple focused systems on a common core, Open Data will not have to trade off power for simplicity. 
-3. Object store native designs have tended to be proprietary, to the detriment of the developer community at large. Open Data remedies that by being MIT licensed from day one. 
+2. Inspired by the UNIX philosophy, we believe single purpose systems that compose well are superior to systems that try to solve many problems under one umbrella, which is what has tended to happen with existing open surce projects since each is developed in a silo. Buy building multiple focused databases on a common core, OpenData will not have to trade off power for simplicity. 
+3. Object store native designs have tended to be proprietary, to the detriment of the developer community at large. OpenData remedies that by being MIT licensed from day one. 
 
