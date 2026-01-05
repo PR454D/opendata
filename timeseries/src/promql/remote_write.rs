@@ -11,7 +11,8 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use prost::Message;
 
-use crate::model::{Attribute, MetricType, Sample, SampleWithAttributes};
+use crate::model::{MetricType, Sample, SampleWithLabels};
+use crate::series::Label;
 use crate::tsdb::Tsdb;
 use crate::util::{OpenTsdbError, Result};
 
@@ -30,14 +31,15 @@ pub struct WriteRequest {
 #[derive(Clone, PartialEq, Message)]
 pub struct TimeSeries {
     #[prost(message, repeated, tag = "1")]
-    pub labels: Vec<Label>,
+    pub labels: Vec<ProtobufLabel>,
     #[prost(message, repeated, tag = "2")]
     pub samples: Vec<ProtobufSample>,
 }
 
-/// Label is a name-value pair for metric identification.
+/// ProtobufLabel is a name-value pair for metric identification.
+/// Named ProtobufLabel to avoid conflict with crate::series::Label.
 #[derive(Clone, PartialEq, Message)]
-pub struct Label {
+pub struct ProtobufLabel {
     #[prost(string, tag = "1")]
     pub name: String,
     #[prost(string, tag = "2")]
@@ -58,28 +60,28 @@ pub struct ProtobufSample {
 // Conversion logic
 // ============================================================================
 
-/// Convert a WriteRequest into a Vec<SampleWithAttributes>.
+/// Convert a WriteRequest into a Vec<SampleWithLabels>.
 ///
-/// Each TimeSeries in the WriteRequest produces one SampleWithAttributes per sample,
+/// Each TimeSeries in the WriteRequest produces one SampleWithLabels per sample,
 /// all sharing the same label set.
-pub fn convert_write_request(request: WriteRequest) -> Vec<SampleWithAttributes> {
+pub fn convert_write_request(request: WriteRequest) -> Vec<SampleWithLabels> {
     let mut result = Vec::new();
 
     for ts in request.timeseries {
-        // Convert labels to Attributes
-        let attributes: Vec<Attribute> = ts
+        // Convert labels to Labels
+        let labels: Vec<Label> = ts
             .labels
             .into_iter()
-            .map(|l| Attribute {
-                key: l.name,
+            .map(|l| Label {
+                name: l.name,
                 value: l.value,
             })
             .collect();
 
-        // Create a SampleWithAttributes for each sample in the time series
+        // Create a SampleWithLabels for each sample in the time series
         for sample in ts.samples {
-            result.push(SampleWithAttributes {
-                attributes: attributes.clone(),
+            result.push(SampleWithLabels {
+                labels: labels.clone(),
                 metric_unit: None, // Remote Write 1.0 doesn't include unit info
                 metric_type: MetricType::Gauge, // Default to Gauge since type info not in 1.0
                 sample: Sample {
@@ -95,7 +97,7 @@ pub fn convert_write_request(request: WriteRequest) -> Vec<SampleWithAttributes>
 }
 
 /// Parse a snappy-compressed protobuf WriteRequest.
-pub fn parse_remote_write(body: &[u8]) -> Result<Vec<SampleWithAttributes>> {
+pub fn parse_remote_write(body: &[u8]) -> Result<Vec<SampleWithLabels>> {
     // Decompress snappy (block format)
     let decompressed = snap::raw::Decoder::new()
         .decompress_vec(body)
@@ -208,11 +210,11 @@ mod tests {
         let request = WriteRequest {
             timeseries: vec![TimeSeries {
                 labels: vec![
-                    Label {
+                    ProtobufLabel {
                         name: "__name__".to_string(),
                         value: "http_requests_total".to_string(),
                     },
-                    Label {
+                    ProtobufLabel {
                         name: "method".to_string(),
                         value: "GET".to_string(),
                     },
@@ -243,11 +245,11 @@ mod tests {
         let request = WriteRequest {
             timeseries: vec![TimeSeries {
                 labels: vec![
-                    Label {
+                    ProtobufLabel {
                         name: "__name__".to_string(),
                         value: "http_requests".to_string(),
                     },
-                    Label {
+                    ProtobufLabel {
                         name: "env".to_string(),
                         value: "prod".to_string(),
                     },
@@ -274,18 +276,18 @@ mod tests {
         // First sample
         assert_eq!(samples[0].sample.value, 100.0);
         assert_eq!(samples[0].sample.timestamp, 1700000000000);
-        assert_eq!(samples[0].attributes.len(), 2);
+        assert_eq!(samples[0].labels.len(), 2);
         assert!(
             samples[0]
-                .attributes
+                .labels
                 .iter()
-                .any(|a| a.key == "__name__" && a.value == "http_requests")
+                .any(|a| a.name == "__name__" && a.value == "http_requests")
         );
         assert!(
             samples[0]
-                .attributes
+                .labels
                 .iter()
-                .any(|a| a.key == "env" && a.value == "prod")
+                .any(|a| a.name == "env" && a.value == "prod")
         );
 
         // Second sample
@@ -299,7 +301,7 @@ mod tests {
         let request = WriteRequest {
             timeseries: vec![
                 TimeSeries {
-                    labels: vec![Label {
+                    labels: vec![ProtobufLabel {
                         name: "__name__".to_string(),
                         value: "metric_a".to_string(),
                     }],
@@ -309,7 +311,7 @@ mod tests {
                     }],
                 },
                 TimeSeries {
-                    labels: vec![Label {
+                    labels: vec![ProtobufLabel {
                         name: "__name__".to_string(),
                         value: "metric_b".to_string(),
                     }],
@@ -347,7 +349,7 @@ mod tests {
         // given
         let request = WriteRequest {
             timeseries: vec![TimeSeries {
-                labels: vec![Label {
+                labels: vec![ProtobufLabel {
                     name: "__name__".to_string(),
                     value: "empty_metric".to_string(),
                 }],
@@ -369,7 +371,7 @@ mod tests {
         // given
         let request = WriteRequest {
             timeseries: vec![TimeSeries {
-                labels: vec![Label {
+                labels: vec![ProtobufLabel {
                     name: "__name__".to_string(),
                     value: "test_metric".to_string(),
                 }],
@@ -439,7 +441,7 @@ mod tests {
         // given
         let request = WriteRequest {
             timeseries: vec![TimeSeries {
-                labels: vec![Label {
+                labels: vec![ProtobufLabel {
                     name: "__name__".to_string(),
                     value: "test".to_string(),
                 }],
@@ -491,11 +493,11 @@ mod tests {
         let timeseries: Vec<TimeSeries> = (0..1000)
             .map(|i| TimeSeries {
                 labels: vec![
-                    Label {
+                    ProtobufLabel {
                         name: "__name__".to_string(),
                         value: format!("metric_{}", i),
                     },
-                    Label {
+                    ProtobufLabel {
                         name: "instance".to_string(),
                         value: format!("host_{}", i % 10),
                     },
