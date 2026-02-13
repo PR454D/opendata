@@ -19,11 +19,13 @@ path = "src/main.rs"
 
 [features]
 default = []
+testing = []
 remote-write = ["dep:prost", "dep:snap"]
 
 [dependencies]
 async-trait.workspace = true
 axum.workspace = true
+axum-extra.workspace = true
 bytes.workspace = true
 chrono.workspace = true
 clap.workspace = true
@@ -61,3 +63,7 @@ snap = { workspace = true, optional = true }
 [dev-dependencies]
 fail.workspace = true
 rstest.workspace = true
+
+[[test]]
+name = "http_server"
+required-features = ["testing"]
