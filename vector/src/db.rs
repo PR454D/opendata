@@ -126,6 +126,9 @@ impl VectorDb {
             Self::load_dictionary_from_storage(snapshot.as_ref(), &dictionary).await?;
         }
 
+        // Load centroid counts from storage
+        let centroid_counts = Self::load_centroid_counts_from_storage(snapshot.as_ref()).await?;
+
         // For now, just force bootstrap centroids. Eventually we'll derive these automatically
         // from the vectors
         let centroid_graph =
@@ -145,6 +148,7 @@ impl VectorDb {
             centroid_graph: Arc::clone(&centroid_graph),
             id_allocator,
             rebalancer_tx,
+            centroid_counts,
         };
 
         // start write coordinator
@@ -266,6 +270,21 @@ impl VectorDb {
         }
 
         Ok(())
+    }
+
+    /// Load centroid counts from storage into a HashMap.
+    ///
+    /// Scans all CentroidStats records and extracts the accumulated num_vectors
+    /// for each centroid.
+    async fn load_centroid_counts_from_storage(
+        snapshot: &dyn StorageRead,
+    ) -> Result<HashMap<u64, u32>> {
+        let stats = snapshot.scan_all_centroid_stats().await?;
+        let mut counts = HashMap::new();
+        for (centroid_id, value) in stats {
+            counts.insert(centroid_id, value.num_vectors.max(0) as u32);
+        }
+        Ok(counts)
     }
 
     /// Write vectors to the database.
@@ -516,7 +535,7 @@ impl VectorDb {
     /// Load candidate vector IDs and their vectors from posting lists.
     async fn load_candidates(
         &self,
-        centroid_ids: &[u32],
+        centroid_ids: &[u64],
         snapshot: &dyn StorageRead,
     ) -> Result<Vec<(u64, Vec<f32>)>> {
         let mut all_candidates = Vec::new();
@@ -575,7 +594,7 @@ impl VectorDb {
             scored_results.push(SearchResult {
                 internal_id: *internal_id,
                 external_id: vector_data.external_id().to_string(),
-                score,
+                score: score.score(),
                 attributes: metadata,
             });
         }
@@ -797,7 +816,7 @@ mod tests {
         let centroids: Vec<CentroidEntry> = cluster_centers
             .iter()
             .enumerate()
-            .map(|(i, vector)| CentroidEntry::new((i + 1) as u32, vector.clone()))
+            .map(|(i, vector)| CentroidEntry::new((i + 1) as u64, vector.clone()))
             .collect();
 
         let db = VectorDb::open_with_centroids(config, centroids)

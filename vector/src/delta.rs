@@ -72,6 +72,10 @@ pub struct VectorDbDeltaContext {
     /// Synchronous ID allocator for internal ID generation.
     pub id_allocator: SequenceAllocator,
     pub rebalancer_tx: tokio::sync::mpsc::UnboundedSender<IndexRebalanceOp>,
+    /// In-memory centroid vector counts, loaded from storage at startup and
+    /// updated on each write. Used by the current delta to observe counts
+    /// and schedule splits/merges.
+    pub centroid_counts: HashMap<u64, u32>,
 }
 
 /// Immutable delta containing all RecordOps ready to be flushed.
@@ -98,7 +102,7 @@ pub(crate) struct VectorDbWriteDelta {
 
 impl VectorDbWriteDelta {
     /// Assign a vector to its nearest centroid using the HNSW graph.
-    fn assign_to_centroid(&self, vector: &[f32]) -> u32 {
+    fn assign_to_centroid(&self, vector: &[f32]) -> u64 {
         self.ctx
             .centroid_graph
             .search(vector, 1)
@@ -148,11 +152,13 @@ impl Delta for VectorDbWriteDelta {
         let mut ops = self.ops;
         let view = self.view.read().expect("lock poisoned").clone();
 
-        // Finalize posting list merges
+        // Finalize posting list merges and centroid stats deltas
         for (centroid_id, updates) in &view.posting_updates {
+            let count = updates.len() as i32;
             if let Ok(op) = record::merge_posting_list(*centroid_id, updates.clone()) {
                 ops.push(op);
             }
+            ops.push(record::merge_centroid_stats(*centroid_id, count));
         }
 
         // Finalize deleted vectors merge
@@ -219,6 +225,9 @@ impl VectorDbWriteDelta {
                 .entry(centroid_id)
                 .or_default()
                 .push(PostingUpdate::append(new_internal_id, write.values));
+
+            // 9. Update in-memory centroid count
+            *self.ctx.centroid_counts.entry(centroid_id).or_default() += 1;
         }
         Ok(())
     }
@@ -226,7 +235,7 @@ impl VectorDbWriteDelta {
 
 #[derive(Clone)]
 pub struct VectorDbDeltaView {
-    posting_updates: HashMap<u32, Vec<PostingUpdate>>,
+    posting_updates: HashMap<u64, Vec<PostingUpdate>>,
     deleted_vectors: RoaringTreemap,
 }
 
@@ -244,27 +253,28 @@ mod tests {
     use super::*;
     use crate::hnsw::CentroidGraph;
     use crate::model::AttributeValue;
-    use crate::serde::key::{DeletionsKey, IdDictionaryKey, PostingListKey, VectorDataKey};
+    use crate::serde::key::{
+        CentroidStatsKey, DeletionsKey, IdDictionaryKey, PostingListKey, VectorDataKey,
+    };
     use bytes::Bytes;
     use common::SequenceAllocator;
     use common::coordinator::Delta;
     use common::storage::RecordOp;
     use common::storage::in_memory::InMemoryStorage;
-    use std::sync::Arc;
 
     /// Mock CentroidGraph that always returns a fixed centroid ID.
     struct MockCentroidGraph {
-        centroid_id: u32,
+        centroid_id: u64,
     }
 
     impl MockCentroidGraph {
-        fn new(centroid_id: u32) -> Self {
+        fn new(centroid_id: u64) -> Self {
             Self { centroid_id }
         }
     }
 
     impl CentroidGraph for MockCentroidGraph {
-        fn search(&self, _query: &[f32], _k: usize) -> Vec<u32> {
+        fn search(&self, _query: &[f32], _k: usize) -> Vec<u64> {
             vec![self.centroid_id]
         }
 
@@ -274,7 +284,7 @@ mod tests {
     }
 
     /// Create a test context with the given centroid ID for assignment.
-    async fn create_test_context(centroid_id: u32) -> VectorDbDeltaContext {
+    async fn create_test_context(centroid_id: u64) -> VectorDbDeltaContext {
         let storage: Arc<dyn common::Storage> = Arc::new(InMemoryStorage::new());
         let key = Bytes::from_static(&[0x01, 0x02]);
         let id_allocator = SequenceAllocator::load(storage.as_ref(), key)
@@ -288,6 +298,7 @@ mod tests {
             centroid_graph: Arc::new(MockCentroidGraph::new(centroid_id)),
             id_allocator,
             rebalancer_tx: tx,
+            centroid_counts: HashMap::new(),
         }
     }
 
@@ -356,7 +367,7 @@ mod tests {
     #[tokio::test]
     async fn should_assign_vectors_to_postings() {
         // given
-        let centroid_id = 42u32;
+        let centroid_id = 42u64;
         let ctx = create_test_context(centroid_id).await;
         let mut delta = VectorDbWriteDelta::init(ctx);
 
@@ -436,7 +447,7 @@ mod tests {
     #[tokio::test]
     async fn should_assign_vectors_to_postings_on_update() {
         // given
-        let centroid_id = 5u32;
+        let centroid_id = 5u64;
         let ctx = create_test_context(centroid_id).await;
 
         // Pre-populate dictionary to simulate existing vector
@@ -570,7 +581,7 @@ mod tests {
         struct MultiCentroidGraph;
 
         impl CentroidGraph for MultiCentroidGraph {
-            fn search(&self, query: &[f32], _k: usize) -> Vec<u32> {
+            fn search(&self, query: &[f32], _k: usize) -> Vec<u64> {
                 // Return centroid based on which dimension has highest value
                 if query[0] > query[1] && query[0] > query[2] {
                     vec![1]
@@ -599,6 +610,7 @@ mod tests {
             centroid_graph: Arc::new(MultiCentroidGraph),
             id_allocator,
             rebalancer_tx: tx,
+            centroid_counts: HashMap::new(),
         };
 
         let mut delta = VectorDbWriteDelta::init(ctx);
@@ -629,6 +641,100 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn should_update_centroid_counts_per_centroid() {
+        // given - create a mock that routes vectors to different centroids
+        struct MultiCentroidGraph;
+
+        impl CentroidGraph for MultiCentroidGraph {
+            fn search(&self, query: &[f32], _k: usize) -> Vec<u64> {
+                if query[0] > query[1] && query[0] > query[2] {
+                    vec![1]
+                } else if query[1] > query[2] {
+                    vec![2]
+                } else {
+                    vec![3]
+                }
+            }
+
+            fn len(&self) -> usize {
+                3
+            }
+        }
+
+        let storage: Arc<dyn common::Storage> = Arc::new(InMemoryStorage::new());
+        let key = Bytes::from_static(&[0x01, 0x02]);
+        let id_allocator = SequenceAllocator::load(storage.as_ref(), key)
+            .await
+            .unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let ctx = VectorDbDeltaContext {
+            dimensions: 3,
+            dictionary: Arc::new(DashMap::new()),
+            centroid_graph: Arc::new(MultiCentroidGraph),
+            id_allocator,
+            rebalancer_tx: tx,
+            centroid_counts: HashMap::new(),
+        };
+
+        let mut delta = VectorDbWriteDelta::init(ctx);
+
+        let writes = vec![
+            create_vector_write("vec-1", vec![1.0, 0.0, 0.0]), // -> centroid 1
+            create_vector_write("vec-2", vec![0.0, 1.0, 0.0]), // -> centroid 2
+            create_vector_write("vec-3", vec![0.0, 0.0, 1.0]), // -> centroid 3
+            create_vector_write("vec-4", vec![0.9, 0.1, 0.0]), // -> centroid 1
+        ];
+
+        // when
+        delta.apply(VectorDbWrite::Write(writes)).unwrap();
+        let (_frozen, _view, ctx) = delta.freeze();
+
+        // then - only centroids that received postings should have counts
+        assert_eq!(ctx.centroid_counts.get(&1), Some(&2)); // vec-1, vec-4
+        assert_eq!(ctx.centroid_counts.get(&2), Some(&1)); // vec-2
+        assert_eq!(ctx.centroid_counts.get(&3), Some(&1)); // vec-3
+        assert_eq!(ctx.centroid_counts.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn should_emit_centroid_stats_on_freeze() {
+        // given
+        let centroid_id = 42u64;
+        let ctx = create_test_context(centroid_id).await;
+        let mut delta = VectorDbWriteDelta::init(ctx);
+
+        let writes = vec![
+            create_vector_write("vec-1", vec![1.0, 2.0, 3.0]),
+            create_vector_write("vec-2", vec![4.0, 5.0, 6.0]),
+        ];
+
+        // when
+        delta.apply(VectorDbWrite::Write(writes)).unwrap();
+        let (frozen, _view, _ctx) = delta.freeze();
+
+        // then - should have a centroid stats merge op with delta = 2
+        let stats_key = CentroidStatsKey::new(centroid_id).encode();
+        let stats_merge = frozen.ops.iter().find(|op| match op {
+            RecordOp::Merge(record) => record.key == stats_key,
+            _ => false,
+        });
+        assert!(
+            stats_merge.is_some(),
+            "should have centroid stats merge op for centroid {}",
+            centroid_id
+        );
+
+        // Verify the delta value is 2
+        if let Some(RecordOp::Merge(record)) = stats_merge {
+            let value =
+                crate::serde::centroid_stats::CentroidStatsValue::decode_from_bytes(&record.value)
+                    .unwrap();
+            assert_eq!(value.num_vectors, 2, "should have delta of 2 for 2 vectors");
+        }
+    }
+
+    #[tokio::test]
     async fn should_estimate_size_correctly() {
         // given
         let ctx = create_test_context(1).await;
@@ -649,7 +755,7 @@ mod tests {
     #[tokio::test]
     async fn should_expose_posting_updates_and_deletes_via_reader() {
         // given
-        let centroid_id = 7u32;
+        let centroid_id = 7u64;
         let ctx = create_test_context(centroid_id).await;
 
         // Pre-populate dictionary so the second write to "vec-1" triggers an upsert/delete
