@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use common::StorageConfig;
+use common::ObjectStoreConfig;
 use serde::{Deserialize, Serialize};
 use serde_with::{DurationMilliSeconds, serde_as};
 
@@ -13,8 +13,8 @@ use crate::model::CompressionType;
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IngestorConfig {
-    /// Determines where and how ingest data is persisted. See [`StorageConfig`].
-    pub storage: StorageConfig,
+    /// Determines where and how ingest data is persisted. See [`ObjectStoreConfig`].
+    pub object_store: ObjectStoreConfig,
 
     /// Path prefix for data batch objects in object storage.
     ///
@@ -60,8 +60,8 @@ pub struct IngestorConfig {
 /// Controls where the queue manifest and data batches are read from.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CollectorConfig {
-    /// Determines where and how ingest data is read. See [`StorageConfig`].
-    pub storage: StorageConfig,
+    /// Determines where and how ingest data is read. See [`ObjectStoreConfig`].
+    pub object_store: ObjectStoreConfig,
 
     /// Path to the queue manifest in object storage.
     ///
