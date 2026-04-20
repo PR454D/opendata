@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use common::storage::RecordOp;
+use common::storage::{PutRecordOp, RecordOp};
 use common::{Record, Storage, StorageRead};
 use roaring::RoaringBitmap;
 
@@ -228,6 +228,23 @@ pub(crate) trait OpenTsdbStorageReadExt: StorageRead {
         Ok(max_series_id)
     }
 
+    /// Check whether `bucket` is already present in the stored `BucketList`.
+    ///
+    /// Used by the flush path to suppress redundant single-element merges
+    /// on a bucket that has already been announced. The `BucketListKey` is
+    /// a global singleton that stays hot in SlateDB's block cache (read on
+    /// every query and warmed at startup), so this is a cache hit in the
+    /// common case.
+    #[tracing::instrument(level = "trace", skip_all)]
+    async fn bucket_list_contains(&self, bucket: TimeBucket) -> Result<bool> {
+        let key = BucketListKey.encode();
+        let Some(record) = self.get(key).await? else {
+            return Ok(false);
+        };
+        let list = BucketListValue::decode(record.value.as_ref())?;
+        Ok(list.buckets.contains(&(bucket.size, bucket.start)))
+    }
+
     /// Get all unique values for a specific label name within a bucket.
     /// This method scans only the inverted index keys for the specified label,
     /// which is more efficient than loading all inverted index entries.
@@ -347,6 +364,26 @@ pub(crate) trait OpenTsdbStorageExt: Storage {
 // Implement the trait for all types that implement Storage
 impl<T: ?Sized + Storage> OpenTsdbStorageExt for T {}
 
+/// Read the current `BucketList` value and rewrite it as a single `Put`,
+/// collapsing the merge chain that accrues across ingestion batches into
+/// one flat record. Intended to run once at startup before ingestion
+/// begins, so later reads don't have to replay operands scattered across
+/// SSTs. Safe only when there are no concurrent writers.
+#[tracing::instrument(level = "info", skip_all)]
+pub(crate) async fn coalesce_bucket_list(storage: &dyn Storage) -> Result<()> {
+    let key = BucketListKey.encode();
+    let Some(record) = storage.get(key.clone()).await? else {
+        return Ok(());
+    };
+    storage
+        .put(vec![PutRecordOp::new(Record {
+            key,
+            value: record.value,
+        })])
+        .await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -429,5 +466,124 @@ mod tests {
         let s = storage_with_buckets(&[0, 60]).await;
         let buckets = s.get_buckets_for_ranges(&[(3600, 7200)]).await.unwrap();
         assert_eq!(starts(&buckets), vec![60]);
+    }
+
+    // ── bucket_list_contains tests ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn should_return_true_when_bucket_in_list() {
+        // given
+        let storage = storage_with_buckets(&[0, 60, 120]).await;
+
+        // when
+        let present = storage
+            .bucket_list_contains(TimeBucket { size: 1, start: 60 })
+            .await
+            .unwrap();
+
+        // then
+        assert!(present);
+    }
+
+    #[tokio::test]
+    async fn should_return_false_when_bucket_absent() {
+        // given
+        let storage = storage_with_buckets(&[0, 60]).await;
+
+        // when
+        let present = storage
+            .bucket_list_contains(TimeBucket {
+                size: 1,
+                start: 180,
+            })
+            .await
+            .unwrap();
+
+        // then
+        assert!(!present);
+    }
+
+    #[tokio::test]
+    async fn should_return_false_when_bucket_list_key_missing() {
+        // given
+        let storage = Arc::new(InMemoryStorage::with_merge_operator(Arc::new(
+            OpenTsdbMergeOperator,
+        )));
+
+        // when
+        let present = storage
+            .bucket_list_contains(TimeBucket { size: 1, start: 0 })
+            .await
+            .unwrap();
+
+        // then
+        assert!(!present);
+    }
+
+    #[tokio::test]
+    async fn should_distinguish_buckets_with_same_start_but_different_size() {
+        // given: only a size=1 bucket at start=60 is present
+        let storage = storage_with_buckets(&[60]).await;
+
+        // when
+        let size_one = storage
+            .bucket_list_contains(TimeBucket { size: 1, start: 60 })
+            .await
+            .unwrap();
+        let size_two = storage
+            .bucket_list_contains(TimeBucket { size: 2, start: 60 })
+            .await
+            .unwrap();
+
+        // then
+        assert!(size_one);
+        assert!(!size_two);
+    }
+
+    // ── coalesce_bucket_list tests ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn should_coalesce_bucket_list_preserving_merged_value() {
+        // given: several merge operands have accrued on the BucketList key
+        let storage = Arc::new(InMemoryStorage::with_merge_operator(Arc::new(
+            OpenTsdbMergeOperator,
+        )));
+        let ops = vec![
+            storage
+                .merge_bucket_list(TimeBucket { size: 1, start: 0 })
+                .unwrap(),
+            storage
+                .merge_bucket_list(TimeBucket { size: 1, start: 60 })
+                .unwrap(),
+            storage
+                .merge_bucket_list(TimeBucket {
+                    size: 1,
+                    start: 120,
+                })
+                .unwrap(),
+        ];
+        storage.apply(ops).await.unwrap();
+
+        // when
+        coalesce_bucket_list(storage.as_ref()).await.unwrap();
+
+        // then: readable value still reflects the full merged list
+        let buckets = storage.get_buckets_in_range(None, None).await.unwrap();
+        assert_eq!(starts(&buckets), vec![0, 60, 120]);
+    }
+
+    #[tokio::test]
+    async fn should_be_noop_when_bucket_list_absent() {
+        // given
+        let storage = Arc::new(InMemoryStorage::with_merge_operator(Arc::new(
+            OpenTsdbMergeOperator,
+        )));
+
+        // when
+        coalesce_bucket_list(storage.as_ref()).await.unwrap();
+
+        // then: key is still absent
+        let record = storage.get(BucketListKey.encode()).await.unwrap();
+        assert!(record.is_none());
     }
 }
